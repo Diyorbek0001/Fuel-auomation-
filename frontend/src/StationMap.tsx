@@ -28,6 +28,8 @@ type Props = {
   dispatchRoutePath: [number, number][];
   searchRadius: { center: [number, number]; miles: number } | null;
   onSelect: (station: Station) => void;
+  onDispatch: (station: Station) => void;
+  onCopy: (station: Station) => void;
 };
 
 const MAP_TILES = {
@@ -55,6 +57,8 @@ export function StationMap({
   dispatchRoutePath,
   searchRadius,
   onSelect,
+  onDispatch,
+  onCopy,
 }: Props) {
   const tiles = MAP_TILES[mapStyle];
 
@@ -98,6 +102,8 @@ export function StationMap({
           dispatchRoutePath={dispatchRoutePath}
           searchRadius={searchRadius}
           onSelect={onSelect}
+          onDispatch={onDispatch}
+          onCopy={onCopy}
         />
       ) : null}
     </MapContainer>
@@ -285,16 +291,26 @@ function TruckLayer({ trucks, selectedTruck }: { trucks: Truck[]; selectedTruck:
   return null;
 }
 
-function ClusteredStationLayer({ stations, selected, onSelect }: Props) {
+function ClusteredStationLayer({ stations, selected, selectedTruck, onSelect, onDispatch, onCopy }: Props) {
   const map = useMap();
   const clusterRef = useRef<L.MarkerClusterGroup | null>(null);
   const markersBySite = useRef<Map<string, L.Marker>>(new Map());
   const onSelectRef = useRef(onSelect);
+  const onDispatchRef = useRef(onDispatch);
+  const onCopyRef = useRef(onCopy);
   const [zoom, setZoom] = useState(map.getZoom());
 
   useEffect(() => {
     onSelectRef.current = onSelect;
   }, [onSelect]);
+
+  useEffect(() => {
+    onDispatchRef.current = onDispatch;
+  }, [onDispatch]);
+
+  useEffect(() => {
+    onCopyRef.current = onCopy;
+  }, [onCopy]);
 
   useEffect(() => {
     const handleZoom = () => setZoom(map.getZoom());
@@ -341,20 +357,35 @@ function ClusteredStationLayer({ stations, selected, onSelect }: Props) {
         icon: stationIcon(station, station.site_code === selected?.site_code, zoom),
         title: `${station.site_code} ${station.station_name}`,
       });
-      marker.bindPopup(popupHtml(station), {
+      marker.bindPopup(popupHtml(station, Boolean(selectedTruck)), {
         className: "dispatch-popup",
         minWidth: 270,
         maxWidth: 320,
       });
       marker.on("click", () => onSelectRef.current(station));
       marker.on("popupopen", () => {
-        const button = document.querySelector<HTMLButtonElement>(`[data-dispatch-site="${station.site_code}"]`);
-        button?.addEventListener("click", () => onSelectRef.current(station), { once: true });
+        const dispatchButton = document.querySelector<HTMLButtonElement>(`[data-dispatch-site="${station.site_code}"]`);
+        const copyButton = document.querySelector<HTMLButtonElement>(`[data-copy-site="${station.site_code}"]`);
+        dispatchButton?.addEventListener(
+          "click",
+          () => {
+            if (selectedTruck) {
+              onDispatchRef.current(station);
+              return;
+            }
+            onSelectRef.current(station);
+          },
+          { once: true }
+        );
+        copyButton?.addEventListener("click", () => {
+          onCopyRef.current(station);
+          copyButton.textContent = "Copied";
+        });
       });
       markersBySite.current.set(station.site_code, marker);
       cluster.addLayer(marker);
     });
-  }, [stations, selected, zoom]);
+  }, [stations, selected, selectedTruck, zoom]);
 
   return null;
 }
@@ -400,7 +431,7 @@ function searchPinIcon(tone: SearchPin["tone"]) {
   });
 }
 
-function popupHtml(station: Station) {
+function popupHtml(station: Station, canDispatch: boolean) {
   const price = station.latest_price?.your_price ? `$${station.latest_price.your_price}` : "No price";
   return `
     <div class="fuel-popup-card">
@@ -413,7 +444,12 @@ function popupHtml(station: Station) {
         <div><span>Fuel Lanes</span><strong>${station.fuel_lane_count ?? "--"}</strong></div>
         <div><span>Parking</span><strong>${station.parking_spaces_count ?? "--"}</strong></div>
       </div>
-      <button class="fuel-popup-button" data-dispatch-site="${escapeHtml(station.site_code)}">Dispatch Station</button>
+      <div class="fuel-popup-actions">
+        <button class="fuel-popup-button" data-dispatch-site="${escapeHtml(station.site_code)}">
+          ${canDispatch ? "Dispatch" : "Select Unit"}
+        </button>
+        <button class="fuel-popup-button fuel-popup-copy-button" data-copy-site="${escapeHtml(station.site_code)}">Copy</button>
+      </div>
     </div>
   `;
 }

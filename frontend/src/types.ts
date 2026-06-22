@@ -60,3 +60,37 @@ export type SamsaraSyncResult = {
   vehicles_read: number;
   vehicles_updated: number;
 };
+
+export type NotificationStatus = "unread" | "read" | "archived";
+
+export type NotificationEvent = {
+  id: number;
+  truck_id: number;
+  dispatch_id: number | null;
+  event_type: string;
+  title: string;
+  message: string;
+  status: NotificationStatus;
+  read_at: string | null;
+  archived_at: string | null;
+  created_at: string;
+  sent_at: string | null;
+  payload_json: Record<string, unknown>;
+  unit_number: string | null;
+};
+
+export type NotificationListResult = {
+  total: number;
+  items: NotificationEvent[];
+};
+
+export type NotificationStreamEvent =
+  | {
+      type: "notification";
+      notification: NotificationEvent;
+      unread_count: number;
+    }
+  | {
+      type: "unread_count";
+      unread_count: number;
+    };

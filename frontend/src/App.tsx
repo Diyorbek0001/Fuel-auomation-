@@ -1,8 +1,18 @@
-import { ArrowUpDown, Fuel, Layers, MapPin, Search } from "lucide-react";
+import { Archive, ArrowUpDown, Bell, CheckCheck, Fuel, Layers, MapPin, Search } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { StationMap, type SearchPin } from "./StationMap";
-import { fetchSamsaraTest, fetchStations, fetchTrucks, syncSamsara } from "./api";
-import type { SamsaraTestResult, Station, Truck } from "./types";
+import {
+  archiveNotifications,
+  fetchNotifications,
+  fetchSamsaraTest,
+  fetchStations,
+  fetchTrucks,
+  fetchUnreadNotificationCount,
+  markNotificationsRead,
+  subscribeToNotifications,
+  syncSamsara,
+} from "./api";
+import type { NotificationEvent, NotificationStatus, SamsaraTestResult, Station, Truck } from "./types";
 
 type TruckFilter = "any" | "dispatched" | "not_dispatched" | "active" | "inactive";
 type MapStyle = "black" | "terrain";
@@ -60,6 +70,13 @@ export function App() {
   const [loadError, setLoadError] = useState("");
   const [loading, setLoading] = useState(true);
   const [samsaraStatus, setSamsaraStatus] = useState<SamsaraTestResult | null>(null);
+  const [notifications, setNotifications] = useState<NotificationEvent[]>([]);
+  const [notificationFilter, setNotificationFilter] = useState<"inbox" | NotificationStatus>("inbox");
+  const [notificationModalOpen, setNotificationModalOpen] = useState(false);
+  const [selectedNotificationIds, setSelectedNotificationIds] = useState<number[]>([]);
+  const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
+  const [notificationToast, setNotificationToast] = useState<NotificationEvent | null>(null);
+  const [notificationError, setNotificationError] = useState("");
 
   useEffect(() => {
     Promise.all([fetchStations(), fetchTrucks(), fetchSamsaraTest()])
@@ -87,6 +104,41 @@ export function App() {
       .catch((error) => setLoadError(error instanceof Error ? error.message : "Unable to load dashboard data"))
       .finally(() => setLoading(false));
   }, []);
+
+  useEffect(() => {
+    fetchUnreadNotificationCount()
+      .then(setUnreadNotificationCount)
+      .catch(() => setNotificationError("Unable to load notification count"));
+    fetchNotifications()
+      .then((payload) => setNotifications(payload.items))
+      .catch(() => setNotificationError("Unable to load notifications"));
+
+    const source = subscribeToNotifications((event) => {
+      setUnreadNotificationCount(event.unread_count);
+      if (event.type === "notification") {
+        setNotifications((current) => [event.notification, ...current.filter((item) => item.id !== event.notification.id)]);
+        setNotificationToast(event.notification);
+      }
+    });
+    return () => source.close();
+  }, []);
+
+  useEffect(() => {
+    if (!notificationToast) return;
+    const timeout = window.setTimeout(() => setNotificationToast(null), 4500);
+    return () => window.clearTimeout(timeout);
+  }, [notificationToast]);
+
+  useEffect(() => {
+    if (!notificationModalOpen) return;
+    const status = notificationFilter === "inbox" ? undefined : notificationFilter;
+    fetchNotifications(status)
+      .then((payload) => {
+        setNotifications(payload.items);
+        setSelectedNotificationIds([]);
+      })
+      .catch(() => setNotificationError("Unable to load notifications"));
+  }, [notificationFilter, notificationModalOpen]);
 
   useEffect(() => {
     window.localStorage.setItem(DISPATCH_STORAGE_KEY, JSON.stringify(dispatchAssignments));
@@ -151,9 +203,8 @@ export function App() {
   const recommendedStation = useMemo(() => {
     if (selectedStation) return selectedStation;
     if (selectedDispatchStation) return selectedDispatchStation;
-    if (!selectedTruck || selectedTruck.latitude == null || selectedTruck.longitude == null) return visibleStations[0] ?? null;
-    return nearestStation(selectedTruck, visibleStations);
-  }, [selectedDispatchStation, selectedStation, selectedTruck, visibleStations]);
+    return null;
+  }, [selectedDispatchStation, selectedStation]);
 
   useEffect(() => {
     let cancelled = false;
@@ -247,6 +298,50 @@ export function App() {
     }
   }
 
+  function dispatchStation(station: Station) {
+    if (!selectedTruck) return;
+    setDispatchAssignments((current) => ({ ...current, [selectedTruck.id]: station.id }));
+    setSelectedStation(station);
+  }
+
+  function copyStation(station: Station) {
+    const message = stationCopyMessage(station, stationSortOrigin);
+    void writeClipboardText(message);
+  }
+
+  const visibleNotifications = useMemo(() => {
+    if (notificationFilter === "inbox") return notifications.filter((notification) => notification.status !== "archived");
+    return notifications.filter((notification) => notification.status === notificationFilter);
+  }, [notificationFilter, notifications]);
+
+  async function markSelectedNotificationsRead() {
+    if (selectedNotificationIds.length === 0) return;
+    const unreadCount = await markNotificationsRead(selectedNotificationIds);
+    setUnreadNotificationCount(unreadCount);
+    setNotifications((current) =>
+      current.map((notification) =>
+        selectedNotificationIds.includes(notification.id)
+          ? { ...notification, status: "read", read_at: new Date().toISOString() }
+          : notification
+      )
+    );
+    setSelectedNotificationIds([]);
+  }
+
+  async function archiveSelectedNotifications() {
+    if (selectedNotificationIds.length === 0) return;
+    const unreadCount = await archiveNotifications(selectedNotificationIds);
+    setUnreadNotificationCount(unreadCount);
+    setNotifications((current) =>
+      current.map((notification) =>
+        selectedNotificationIds.includes(notification.id)
+          ? { ...notification, status: "archived", archived_at: new Date().toISOString() }
+          : notification
+      )
+    );
+    setSelectedNotificationIds([]);
+  }
+
   return (
     <main className="app-shell h-screen overflow-hidden bg-[#0B1220] text-[#F9FAFB]">
       <header className="topbar flex h-[76px] items-center gap-4 border-b border-[#374151] bg-[#111827] px-5">
@@ -259,6 +354,14 @@ export function App() {
             <p className="text-xs font-medium text-[#D1D5DB]">Fleet fuel operations</p>
           </div>
         </div>
+
+        <button className="notification-header-button" onClick={() => setNotificationModalOpen(true)}>
+          {unreadNotificationCount > 0 ? (
+            <span className="notification-header-badge">{unreadNotificationCount > 99 ? "99+" : unreadNotificationCount}</span>
+          ) : null}
+          <Bell size={17} />
+          <span>Notifications</span>
+        </button>
 
         <form
           className="route-search"
@@ -494,6 +597,8 @@ export function App() {
             dispatchRoutePath={dispatchRoutePath}
             searchRadius={searchRadius}
             onSelect={setSelectedStation}
+            onDispatch={dispatchStation}
+            onCopy={copyStation}
           />
           <div className="map-legend absolute left-5 top-5 rounded-lg border border-[#374151] bg-[#111827]/95 px-4 py-3 shadow-2xl">
             <div className="flex items-center gap-2 text-sm font-bold">
@@ -522,11 +627,8 @@ export function App() {
             sortMode={stationSort}
             canSortNearest={Boolean(stationSortOrigin)}
             searchActive={Boolean(mapSearchResult)}
-            onDispatch={(station) => {
-              if (!selectedTruck) return;
-              setDispatchAssignments((current) => ({ ...current, [selectedTruck.id]: station.id }));
-              setSelectedStation(station);
-            }}
+            onDispatch={dispatchStation}
+            onCopy={copyStation}
             onResetDispatch={() => {
               if (!selectedTruck) return;
               setDispatchAssignments((current) => {
@@ -548,7 +650,134 @@ export function App() {
           />
         </aside>
       </div>
+      {notificationModalOpen ? (
+        <NotificationModal
+          notifications={visibleNotifications}
+          filter={notificationFilter}
+          selectedIds={selectedNotificationIds}
+          error={notificationError}
+          onClose={() => setNotificationModalOpen(false)}
+          onFilterChange={setNotificationFilter}
+          onSelectIds={setSelectedNotificationIds}
+          onMarkRead={() => void markSelectedNotificationsRead()}
+          onArchive={() => void archiveSelectedNotifications()}
+        />
+      ) : null}
+      {notificationToast ? (
+        <div className="notification-toast">
+          <div className="notification-toast-kicker">New notification</div>
+          <div className="notification-toast-title">{notificationToast.title}</div>
+          <div className="notification-toast-message">{notificationToast.message}</div>
+        </div>
+      ) : null}
     </main>
+  );
+}
+
+function NotificationModal({
+  notifications,
+  filter,
+  selectedIds,
+  error,
+  onClose,
+  onFilterChange,
+  onSelectIds,
+  onMarkRead,
+  onArchive,
+}: {
+  notifications: NotificationEvent[];
+  filter: "inbox" | NotificationStatus;
+  selectedIds: number[];
+  error: string;
+  onClose: () => void;
+  onFilterChange: (filter: "inbox" | NotificationStatus) => void;
+  onSelectIds: (ids: number[]) => void;
+  onMarkRead: () => void;
+  onArchive: () => void;
+}) {
+  const allSelected = notifications.length > 0 && notifications.every((notification) => selectedIds.includes(notification.id));
+
+  function toggleNotification(notificationId: number) {
+    onSelectIds(
+      selectedIds.includes(notificationId)
+        ? selectedIds.filter((id) => id !== notificationId)
+        : [...selectedIds, notificationId]
+    );
+  }
+
+  return (
+    <div className="notification-modal-backdrop" role="presentation" onMouseDown={onClose}>
+      <section className="notification-modal" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="notification-modal-header">
+          <div>
+            <h2>Notifications</h2>
+            <p>{notifications.length.toLocaleString()} visible</p>
+          </div>
+          <button className="notification-close-button" onClick={onClose} aria-label="Close notifications">
+            ×
+          </button>
+        </div>
+
+        <div className="notification-action-bar">
+          <label className="notification-select-all">
+            <input
+              type="checkbox"
+              checked={allSelected}
+              onChange={() => onSelectIds(allSelected ? [] : notifications.map((notification) => notification.id))}
+            />
+            <span>Select</span>
+          </label>
+          <button disabled={selectedIds.length === 0} onClick={onMarkRead}>
+            <CheckCheck size={15} />
+            Mark as Read
+          </button>
+          <button disabled={selectedIds.length === 0} onClick={onArchive}>
+            <Archive size={15} />
+            Archive
+          </button>
+          <select value={filter} onChange={(event) => onFilterChange(event.target.value as "inbox" | NotificationStatus)}>
+            <option value="inbox">Inbox</option>
+            <option value="unread">Unread</option>
+            <option value="read">Read</option>
+            <option value="archived">Archived</option>
+          </select>
+        </div>
+
+        {error ? <div className="notification-error">{error}</div> : null}
+
+        <div className="notification-list">
+          {notifications.length === 0 ? (
+            <div className="notification-empty">No notifications found.</div>
+          ) : (
+            notifications.map((notification) => (
+              <article
+                key={notification.id}
+                className={`notification-row ${notification.status === "unread" ? "is-unread" : ""}`}
+              >
+                <input
+                  type="checkbox"
+                  checked={selectedIds.includes(notification.id)}
+                  onChange={() => toggleNotification(notification.id)}
+                />
+                <div className="notification-event-icon">{notificationEventIcon(notification.event_type)}</div>
+                <div className="notification-row-body">
+                  <div className="notification-row-topline">
+                    <strong>{notification.title}</strong>
+                    <time>{formatNotificationTime(notification.created_at)}</time>
+                  </div>
+                  <p>{notification.message}</p>
+                  <div className="notification-row-meta">
+                    <span>Unit {notification.unit_number ?? notification.truck_id}</span>
+                    <span>{eventTypeLabel(notification.event_type)}</span>
+                    <span className={`notification-status-pill is-${notification.status}`}>{notification.status}</span>
+                  </div>
+                </div>
+              </article>
+            ))
+          )}
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -608,6 +837,7 @@ function StationResults({
   canSortNearest,
   searchActive,
   onDispatch,
+  onCopy,
   onResetDispatch,
   onToggleTruckActive,
   onSortChange,
@@ -622,6 +852,7 @@ function StationResults({
   canSortNearest: boolean;
   searchActive: boolean;
   onDispatch: (station: Station) => void;
+  onCopy: (station: Station) => void;
   onResetDispatch: () => void;
   onToggleTruckActive: () => void;
   onSortChange: (sort: StationSort) => void;
@@ -717,6 +948,9 @@ function StationResults({
                 >
                   {dispatchedStationId === station.id ? "Dispatched" : "Dispatch"}
                 </button>
+                <button className="station-copy-button" onClick={() => onCopy(station)}>
+                  Copy
+                </button>
                 {dispatchedStationId === station.id ? (
                   <button className="station-reset-button" onClick={onResetDispatch}>
                     Reset
@@ -739,6 +973,31 @@ function Metric({ label, value, tone }: { label: string; value: string; tone?: "
       <div className={`mt-1 text-lg font-black ${valueClass}`}>{value}</div>
     </div>
   );
+}
+
+function notificationEventIcon(eventType: string) {
+  if (eventType.includes("FUEL")) return "F";
+  if (eventType.includes("DISPATCH")) return "D";
+  if (eventType.includes("SAMSARA")) return "!";
+  return "*";
+}
+
+function eventTypeLabel(eventType: string) {
+  return eventType
+    .split("_")
+    .map((part) => part.charAt(0) + part.slice(1).toLowerCase())
+    .join(" ");
+}
+
+function formatNotificationTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(date);
 }
 
 function filterTruck(
@@ -798,6 +1057,50 @@ function nearestStation(truck: Truck, stations: Station[]) {
 function normalizeMiles(value: string, fallback: number) {
   const miles = Number(value);
   return Number.isFinite(miles) && miles > 0 ? miles : fallback;
+}
+
+function stationCopyMessage(station: Station, origin: GeoPoint | null) {
+  const distance = origin ? Math.round(distanceMiles(origin, station)) : null;
+  const distanceLine = distance == null || !Number.isFinite(distance)
+    ? "Distance unavailable"
+    : `${distance} ${distance === 1 ? "mile" : "miles"} away`;
+  return [
+    `${station.station_name} ${station.site_code}`,
+    "",
+    `${station.address} ${station.city}, ${station.state}`,
+    "",
+    `https://www.google.com/maps/search/?api=1&query=${station.latitude},${station.longitude}`,
+    "",
+    `Price: ${stationPriceText(station)}`,
+    "",
+    distanceLine,
+    "",
+    "Driver Good day sir, We hope you are doing well.",
+    "Please fill up from this station.",
+  ].join("\n");
+}
+
+function stationPriceText(station: Station) {
+  const price = station.latest_price?.your_price ?? station.latest_price?.discount_price;
+  if (!price) return "--";
+  const numericPrice = Number(price);
+  return Number.isFinite(numericPrice) ? `$${numericPrice.toFixed(2)}` : `$${price}`;
+}
+
+async function writeClipboardText(text: string) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.setAttribute("readonly", "");
+    textarea.style.position = "fixed";
+    textarea.style.opacity = "0";
+    document.body.appendChild(textarea);
+    textarea.select();
+    document.execCommand("copy");
+    textarea.remove();
+  }
 }
 
 function loadDispatchAssignments(): Record<number, number> {

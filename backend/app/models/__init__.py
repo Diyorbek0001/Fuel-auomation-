@@ -3,6 +3,7 @@ from app.models.company import Company
 from app.models.driver import Driver
 from app.models.fuel_dispatch import FuelDispatch, FuelDispatchNote, FuelDispatchStatus
 from app.models.fuel_price import FuelPrice, FuelPriceImportBatch, FuelPriceImportStatus
+from app.models.notification_event import NotificationEvent, NotificationStatus
 from app.models.samsara_sync_log import SamsaraSyncLog
 from app.models.station import StationMaster
 from app.models.truck import Truck
@@ -18,6 +19,8 @@ __all__ = [
     "FuelPrice",
     "FuelPriceImportBatch",
     "FuelPriceImportStatus",
+    "NotificationEvent",
+    "NotificationStatus",
     "SamsaraSyncLog",
     "StationMaster",
     "Truck",
