@@ -1,30 +1,73 @@
-import { Archive, ArrowUpDown, Bell, CheckCheck, Fuel, Layers, MapPin, Search } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  Archive,
+  ArrowUpDown,
+  Bell,
+  CheckCheck,
+  Fuel,
+  Layers,
+  LogOut,
+  MapPin,
+  Search,
+  Settings,
+  Shield,
+  Users,
+} from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { StationMap, type SearchPin } from "./StationMap";
 import {
   assignDispatch,
   cancelDispatch,
   archiveNotifications,
+  createUser,
   fetchNotifications,
+  fetchCurrentUser,
   fetchSamsaraTest,
   fetchStations,
   fetchTrucks,
+  fetchUsers,
+  getAuthToken,
+  login,
+  logout,
   fetchUnreadNotificationCount,
   markNotificationsRead,
+  setTruckActive,
   subscribeToNotifications,
   subscribeToTruckUpdates,
+  updateUser,
 } from "./api";
-import type { NotificationEvent, NotificationStatus, SamsaraTestResult, Station, Truck } from "./types";
+import type {
+  NotificationEvent,
+  NotificationStatus,
+  SamsaraTestResult,
+  Station,
+  Truck,
+  User,
+  UserCreateInput,
+  UserRole,
+  UserUpdateInput,
+} from "./types";
 
 type TruckFilter = "any" | "dispatched" | "not_dispatched" | "active" | "inactive";
-type MapStyle = "black" | "terrain";
+type MapStyle = "dark" | "light";
+type AppTheme = "blue" | "coffee" | "charcoal" | "white" | "pitch";
 type SearchMode = "nearby" | "route";
 type StationSort = "nearest" | "cheapest";
+type RightPanelView = "stations" | "dispatches";
+type NotificationPreferenceKey = "fuel" | "fuelJump" | "dispatch" | "samsara" | "system";
+
+type DashboardSettings = {
+  theme: AppTheme;
+  notifications: Record<NotificationPreferenceKey, boolean>;
+};
 
 type GeoPoint = {
   label: string;
   latitude: number;
   longitude: number;
+};
+
+type DispatchOrigin = GeoPoint & {
+  capturedAt: string;
 };
 
 type MapSearchResult =
@@ -42,7 +85,44 @@ type MapSearchResult =
     };
 
 const DISPATCH_STORAGE_KEY = "emafuel-dispatch-assignments";
+const DISPATCH_ORIGIN_STORAGE_KEY = "emafuel-dispatch-origins";
 const TRUCK_ACTIVE_STORAGE_KEY = "emafuel-truck-active-overrides";
+const DASHBOARD_SETTINGS_STORAGE_KEY = "emafuel-dashboard-settings";
+
+const DEFAULT_DASHBOARD_SETTINGS: DashboardSettings = {
+  theme: "pitch",
+  notifications: {
+    fuel: true,
+    fuelJump: true,
+    dispatch: true,
+    samsara: true,
+    system: true,
+  },
+};
+
+const NOTIFICATION_SETTING_OPTIONS: {
+  key: NotificationPreferenceKey;
+  label: string;
+  description: string;
+}[] = [
+  { key: "fuel", label: "Fuel threshold", description: "Low fuel and threshold alerts." },
+  { key: "fuelJump", label: "Fuel jump", description: "Unexpected refill or fuel increase alerts." },
+  { key: "dispatch", label: "Dispatch distance", description: "60/50 mile, arrived, and missed station alerts." },
+  { key: "samsara", label: "Samsara live feed", description: "Samsara sync and live update warnings." },
+  { key: "system", label: "System", description: "Everything else from the notification engine." },
+];
+
+const THEME_OPTIONS: {
+  key: AppTheme;
+  label: string;
+  description: string;
+}[] = [
+  { key: "blue", label: "Original blue", description: "The first blue dispatch palette." },
+  { key: "coffee", label: "Black coffee", description: "Warm dark palette for long shifts." },
+  { key: "charcoal", label: "Black charcoal", description: "Cool graphite with clean green accents." },
+  { key: "white", label: "White", description: "Bright UI with a light map." },
+  { key: "pitch", label: "Pitch black", description: "Deep black map room style." },
+];
 
 export function App() {
   const [stations, setStations] = useState<Station[]>([]);
@@ -59,7 +139,9 @@ export function App() {
   const [mapSearchError, setMapSearchError] = useState("");
   const [mapSearchBusy, setMapSearchBusy] = useState(false);
   const [stationSort, setStationSort] = useState<StationSort>("nearest");
+  const [rightPanelView, setRightPanelView] = useState<RightPanelView>("stations");
   const [dispatchAssignments, setDispatchAssignments] = useState<Record<number, number>>(() => loadDispatchAssignments());
+  const [dispatchOrigins, setDispatchOrigins] = useState<Record<number, DispatchOrigin>>(() => loadDispatchOrigins());
   const [truckActiveOverrides, setTruckActiveOverrides] = useState<Record<number, boolean>>(() => loadTruckActiveOverrides());
   const [dispatchRoutePath, setDispatchRoutePath] = useState<[number, number][]>([]);
   const [unitSearch, setUnitSearch] = useState("");
@@ -68,7 +150,7 @@ export function App() {
   const [fuelSortDirection, setFuelSortDirection] = useState<"asc" | "desc">("asc");
   const [showMapTrucks, setShowMapTrucks] = useState(true);
   const [showMapLocations, setShowMapLocations] = useState(true);
-  const [mapStyle, setMapStyle] = useState<MapStyle>("black");
+  const [dashboardSettings, setDashboardSettings] = useState<DashboardSettings>(() => loadDashboardSettings());
   const [loadError, setLoadError] = useState("");
   const [loading, setLoading] = useState(true);
   const [samsaraStatus, setSamsaraStatus] = useState<SamsaraTestResult | null>(null);
@@ -79,8 +161,30 @@ export function App() {
   const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
   const [notificationToast, setNotificationToast] = useState<NotificationEvent | null>(null);
   const [notificationError, setNotificationError] = useState("");
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [loginError, setLoginError] = useState("");
+  const [userManagementOpen, setUserManagementOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+
+  const canAdmin = currentUser?.role === "creator" || currentUser?.role === "admin";
+  const canManageUsers = currentUser?.role === "creator";
+  const mapStyle: MapStyle = dashboardSettings.theme === "white" ? "light" : "dark";
 
   useEffect(() => {
+    if (!getAuthToken()) {
+      setAuthLoading(false);
+      return;
+    }
+    fetchCurrentUser()
+      .then(setCurrentUser)
+      .catch(() => setCurrentUser(null))
+      .finally(() => setAuthLoading(false));
+  }, []);
+
+  useEffect(() => {
+    if (!currentUser) return;
+    setLoading(true);
     Promise.all([fetchStations(), fetchTrucks(), fetchSamsaraTest()])
       .then(([stationItems, truckItems, samsara]) => {
         setStations(stationItems);
@@ -90,9 +194,10 @@ export function App() {
       })
       .catch((error) => setLoadError(error instanceof Error ? error.message : "Unable to load dashboard data"))
       .finally(() => setLoading(false));
-  }, []);
+  }, [currentUser]);
 
   useEffect(() => {
+    if (!currentUser) return;
     const source = subscribeToTruckUpdates((event) => {
       setTrucks((current) => {
         const exists = current.some((truck) => truck.id === event.truck.id);
@@ -104,9 +209,10 @@ export function App() {
       setSelectedTruck((current) => (current?.id === event.truck.id ? event.truck : current));
     });
     return () => source.close();
-  }, []);
+  }, [currentUser]);
 
   useEffect(() => {
+    if (!currentUser) return;
     fetchUnreadNotificationCount()
       .then(setUnreadNotificationCount)
       .catch(() => setNotificationError("Unable to load notification count"));
@@ -118,11 +224,13 @@ export function App() {
       setUnreadNotificationCount(event.unread_count);
       if (event.type === "notification") {
         setNotifications((current) => [event.notification, ...current.filter((item) => item.id !== event.notification.id)]);
-        setNotificationToast(event.notification);
+        if (notificationAllowed(event.notification, dashboardSettings.notifications)) {
+          setNotificationToast(event.notification);
+        }
       }
     });
     return () => source.close();
-  }, []);
+  }, [currentUser, dashboardSettings.notifications]);
 
   useEffect(() => {
     if (!notificationToast) return;
@@ -146,8 +254,16 @@ export function App() {
   }, [dispatchAssignments]);
 
   useEffect(() => {
+    window.localStorage.setItem(DISPATCH_ORIGIN_STORAGE_KEY, JSON.stringify(dispatchOrigins));
+  }, [dispatchOrigins]);
+
+  useEffect(() => {
     window.localStorage.setItem(TRUCK_ACTIVE_STORAGE_KEY, JSON.stringify(truckActiveOverrides));
   }, [truckActiveOverrides]);
+
+  useEffect(() => {
+    window.localStorage.setItem(DASHBOARD_SETTINGS_STORAGE_KEY, JSON.stringify(dashboardSettings));
+  }, [dashboardSettings]);
 
   const filteredTrucks = useMemo(() => {
     const needle = unitSearch.trim().toLowerCase();
@@ -200,6 +316,33 @@ export function App() {
     const stationId = dispatchAssignments[selectedTruck.id];
     return stations.find((station) => station.id === stationId) ?? null;
   }, [dispatchAssignments, selectedTruck, stations]);
+
+  const currentDispatches = useMemo(() => {
+    const items: { truck: Truck; station: Station; origin: DispatchOrigin | null }[] = [];
+    Object.entries(dispatchAssignments).forEach(([truckId, stationId]) => {
+      const numericTruckId = Number(truckId);
+      const truck = trucks.find((item) => item.id === numericTruckId);
+      const station = stations.find((item) => item.id === stationId);
+      if (truck && station) items.push({ truck, station, origin: dispatchOrigins[numericTruckId] ?? null });
+    });
+    return items.sort((a, b) => a.truck.unit_number.localeCompare(b.truck.unit_number, undefined, { numeric: true }));
+  }, [dispatchAssignments, dispatchOrigins, stations, trucks]);
+
+  useEffect(() => {
+    const missingOrigins = Object.keys(dispatchAssignments)
+      .map(Number)
+      .filter((truckId) => !dispatchOrigins[truckId]);
+    if (missingOrigins.length === 0) return;
+
+    const nextOrigins: Record<number, DispatchOrigin> = {};
+    missingOrigins.forEach((truckId) => {
+      const truck = trucks.find((item) => item.id === truckId);
+      const origin = truck ? dispatchOriginFromTruck(truck) : null;
+      if (origin) nextOrigins[truckId] = origin;
+    });
+    if (Object.keys(nextOrigins).length === 0) return;
+    setDispatchOrigins((current) => ({ ...current, ...nextOrigins }));
+  }, [dispatchAssignments, dispatchOrigins, trucks]);
 
   const recommendedStation = useMemo(() => {
     if (selectedStation) return selectedStation;
@@ -301,7 +444,15 @@ export function App() {
 
   function dispatchStation(station: Station) {
     if (!selectedTruck) return;
+    if (!canAdmin) {
+      setLoadError("Admin permission required");
+      return;
+    }
     setDispatchAssignments((current) => ({ ...current, [selectedTruck.id]: station.id }));
+    const origin = dispatchOriginFromTruck(selectedTruck);
+    if (origin) {
+      setDispatchOrigins((current) => ({ ...current, [selectedTruck.id]: origin }));
+    }
     setSelectedStation(station);
     void assignDispatch(selectedTruck.id, station.id).catch((error) => {
       setLoadError(error instanceof Error ? error.message : "Failed to assign dispatch");
@@ -313,10 +464,63 @@ export function App() {
     void writeClipboardText(message);
   }
 
+  async function handleLogin(username: string, password: string) {
+    setLoginError("");
+    try {
+      const user = await login(username, password);
+      setCurrentUser(user);
+    } catch (error) {
+      setLoginError(error instanceof Error ? error.message : "Login failed");
+    }
+  }
+
+  async function handleLogout() {
+    await logout();
+    setCurrentUser(null);
+    setStations([]);
+    setTrucks([]);
+    setSelectedTruck(null);
+    setSelectedStation(null);
+    setNotifications([]);
+    setUnreadNotificationCount(0);
+  }
+
+  async function toggleSelectedTruckActive() {
+    if (!selectedTruck || !canAdmin) return;
+    const nextActive = !effectiveTruckActive(selectedTruck, truckActiveOverrides);
+    try {
+      await setTruckActive(selectedTruck.id, nextActive);
+      setTruckActiveOverrides((current) => ({ ...current, [selectedTruck.id]: nextActive }));
+      setTrucks((current) =>
+        current.map((truck) => (truck.id === selectedTruck.id ? { ...truck, active: nextActive } : truck))
+      );
+      setSelectedTruck((current) => (current ? { ...current, active: nextActive } : current));
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : "Failed to update unit status");
+    }
+  }
+
   const visibleNotifications = useMemo(() => {
-    if (notificationFilter === "inbox") return notifications.filter((notification) => notification.status !== "archived");
-    return notifications.filter((notification) => notification.status === notificationFilter);
-  }, [notificationFilter, notifications]);
+    const enabledNotifications = notifications.filter((notification) =>
+      notificationAllowed(notification, dashboardSettings.notifications)
+    );
+    if (notificationFilter === "inbox") return enabledNotifications.filter((notification) => notification.status !== "archived");
+    return enabledNotifications.filter((notification) => notification.status === notificationFilter);
+  }, [dashboardSettings.notifications, notificationFilter, notifications]);
+
+  const displayedUnreadNotificationCount = useMemo(() => {
+    return notifications.filter(
+      (notification) => notification.status === "unread" && notificationAllowed(notification, dashboardSettings.notifications)
+    ).length;
+  }, [dashboardSettings.notifications, notifications]);
+
+  if (authLoading) {
+    return <AuthLoadingScreen />;
+  }
+
+  if (!currentUser) {
+    return <LoginPage error={loginError} onLogin={handleLogin} />;
+  }
 
   async function markSelectedNotificationsRead() {
     if (selectedNotificationIds.length === 0) return;
@@ -347,7 +551,7 @@ export function App() {
   }
 
   return (
-    <main className="app-shell h-screen overflow-hidden bg-[#0B1220] text-[#F9FAFB]">
+    <main className={`app-shell theme-${dashboardSettings.theme} h-screen overflow-hidden bg-[#0B1220] text-[#F9FAFB]`}>
       <header className="topbar flex h-[76px] items-center gap-4 border-b border-[#374151] bg-[#111827] px-5">
         <div className="brand-block flex min-w-[248px] items-center gap-3">
           <div className="brand-icon flex h-11 w-11 items-center justify-center rounded-lg bg-[#2563EB] text-white shadow-lg shadow-blue-950/40">
@@ -360,8 +564,10 @@ export function App() {
         </div>
 
         <button className="notification-header-button" onClick={() => setNotificationModalOpen(true)}>
-          {unreadNotificationCount > 0 ? (
-            <span className="notification-header-badge">{unreadNotificationCount > 99 ? "99+" : unreadNotificationCount}</span>
+          {displayedUnreadNotificationCount > 0 ? (
+            <span className="notification-header-badge">
+              {displayedUnreadNotificationCount > 99 ? "99+" : displayedUnreadNotificationCount}
+            </span>
           ) : null}
           <Bell size={17} />
           <span>Notifications</span>
@@ -474,15 +680,28 @@ export function App() {
           >
             Stations
           </button>
-          {(["black", "terrain"] as const).map((style) => (
-            <button
-              key={style}
-              className={mapStyle === style ? "is-active" : ""}
-              onClick={() => setMapStyle(style)}
-            >
-              {style === "black" ? "Black" : "Terrain"}
+          <button className="settings-header-button" onClick={() => setSettingsOpen(true)}>
+            <Settings size={15} />
+            Settings
+          </button>
+        </div>
+
+        <div className="account-cluster">
+          <div className="account-pill">
+            <Shield size={15} />
+            <span>{currentUser.display_name || currentUser.username}</span>
+            <strong>{currentUser.role}</strong>
+          </div>
+          {canManageUsers ? (
+            <button className="account-action" onClick={() => setUserManagementOpen(true)}>
+              <Users size={15} />
+              Users
             </button>
-          ))}
+          ) : null}
+          <button className="account-action" onClick={() => void handleLogout()}>
+            <LogOut size={15} />
+            Logout
+          </button>
         </div>
       </header>
 
@@ -603,6 +822,7 @@ export function App() {
             onSelect={setSelectedStation}
             onDispatch={dispatchStation}
             onCopy={copyStation}
+            canDispatch={canAdmin && Boolean(selectedTruck)}
           />
           <div className="map-legend absolute left-5 top-5 rounded-lg border border-[#374151] bg-[#111827]/95 px-4 py-3 shadow-2xl">
             <div className="flex items-center gap-2 text-sm font-bold">
@@ -619,44 +839,62 @@ export function App() {
           <div className="details-heading border-b border-[#374151] p-5">
             <div className="flex items-center gap-2 text-sm font-bold text-[#F9FAFB]">
               <MapPin size={18} className="text-[#22C55E]" />
-              Station Results
+              {rightPanelView === "stations" ? "Station Results" : "Current Dispatched"}
             </div>
           </div>
-          <StationResults
-            stations={stationResults}
-            selectedStation={recommendedStation}
-            selectedTruck={selectedTruck}
-            selectedTruckActive={selectedTruck ? effectiveTruckActive(selectedTruck, truckActiveOverrides) : null}
-            dispatchedStationId={selectedTruck ? dispatchAssignments[selectedTruck.id] : undefined}
-            sortMode={stationSort}
-            distanceOrigin={stationSortOrigin}
-            canSortNearest={Boolean(stationSortOrigin)}
-            searchActive={Boolean(mapSearchResult)}
-            onDispatch={dispatchStation}
-            onCopy={copyStation}
-            onResetDispatch={() => {
-              if (!selectedTruck) return;
-              const truckId = selectedTruck.id;
-              setDispatchAssignments((current) => {
-                const next = { ...current };
-                delete next[truckId];
-                return next;
-              });
-              setSelectedStation(null);
-              void cancelDispatch(truckId).catch((error) => {
-                setLoadError(error instanceof Error ? error.message : "Failed to cancel dispatch");
-              });
-            }}
-            onToggleTruckActive={() => {
-              if (!selectedTruck) return;
-              setTruckActiveOverrides((current) => ({
-                ...current,
-                [selectedTruck.id]: !effectiveTruckActive(selectedTruck, current),
-              }));
-            }}
-            onSortChange={setStationSort}
-            onSelect={setSelectedStation}
-          />
+          <div className="right-panel-tabs">
+            <button className={rightPanelView === "stations" ? "is-active" : ""} onClick={() => setRightPanelView("stations")}>
+              Stations
+            </button>
+            <button className={rightPanelView === "dispatches" ? "is-active" : ""} onClick={() => setRightPanelView("dispatches")}>
+              Current dispatched
+            </button>
+          </div>
+          {rightPanelView === "stations" ? (
+            <StationResults
+              stations={stationResults}
+              selectedStation={recommendedStation}
+              selectedTruck={selectedTruck}
+              selectedTruckActive={selectedTruck ? effectiveTruckActive(selectedTruck, truckActiveOverrides) : null}
+              dispatchedStationId={selectedTruck ? dispatchAssignments[selectedTruck.id] : undefined}
+              sortMode={stationSort}
+              distanceOrigin={stationSortOrigin}
+              canSortNearest={Boolean(stationSortOrigin)}
+              searchActive={Boolean(mapSearchResult)}
+              canDispatch={canAdmin}
+              onDispatch={dispatchStation}
+              onCopy={copyStation}
+              onResetDispatch={() => {
+                if (!selectedTruck || !canAdmin) return;
+                const truckId = selectedTruck.id;
+                setDispatchAssignments((current) => {
+                  const next = { ...current };
+                  delete next[truckId];
+                  return next;
+                });
+                setDispatchOrigins((current) => {
+                  const next = { ...current };
+                  delete next[truckId];
+                  return next;
+                });
+                setSelectedStation(null);
+                void cancelDispatch(truckId).catch((error) => {
+                  setLoadError(error instanceof Error ? error.message : "Failed to cancel dispatch");
+                });
+              }}
+              onToggleTruckActive={() => void toggleSelectedTruckActive()}
+              onSortChange={setStationSort}
+              onSelect={setSelectedStation}
+            />
+          ) : (
+            <CurrentDispatches
+              dispatches={currentDispatches}
+              onSelect={(truck, station) => {
+                setSelectedTruck(truck);
+                setSelectedStation(station);
+              }}
+            />
+          )}
         </aside>
       </div>
       {notificationModalOpen ? (
@@ -678,6 +916,14 @@ export function App() {
           <div className="notification-toast-title">{notificationToast.title}</div>
           <div className="notification-toast-message">{notificationToast.message}</div>
         </div>
+      ) : null}
+      {userManagementOpen ? <UserManagementModal currentUser={currentUser} onClose={() => setUserManagementOpen(false)} /> : null}
+      {settingsOpen ? (
+        <SettingsModal
+          settings={dashboardSettings}
+          onChange={setDashboardSettings}
+          onClose={() => setSettingsOpen(false)}
+        />
       ) : null}
     </main>
   );
@@ -790,6 +1036,328 @@ function NotificationModal({
   );
 }
 
+function SettingsModal({
+  settings,
+  onChange,
+  onClose,
+}: {
+  settings: DashboardSettings;
+  onChange: (settings: DashboardSettings) => void;
+  onClose: () => void;
+}) {
+  function setTheme(theme: AppTheme) {
+    onChange({ ...settings, theme });
+  }
+
+  function toggleNotification(key: NotificationPreferenceKey) {
+    onChange({
+      ...settings,
+      notifications: {
+        ...settings.notifications,
+        [key]: !settings.notifications[key],
+      },
+    });
+  }
+
+  return (
+    <div className="notification-modal-backdrop" role="presentation" onMouseDown={onClose}>
+      <section className="settings-modal" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="notification-modal-header">
+          <div>
+            <h2>Settings</h2>
+            <p>Notification cases and dashboard theme.</p>
+          </div>
+          <button className="notification-close-button" onClick={onClose} aria-label="Close settings">
+            ×
+          </button>
+        </div>
+
+        <div className="settings-content">
+          <section className="settings-section">
+            <div className="settings-section-heading">
+              <h3>Notifications</h3>
+              <p>Choose which alert cases appear in this dashboard.</p>
+            </div>
+            <div className="settings-toggle-grid">
+              {NOTIFICATION_SETTING_OPTIONS.map((option) => (
+                <label className="settings-toggle-row" key={option.key}>
+                  <input
+                    type="checkbox"
+                    checked={settings.notifications[option.key]}
+                    onChange={() => toggleNotification(option.key)}
+                  />
+                  <span>
+                    <strong>{option.label}</strong>
+                    <em>{option.description}</em>
+                  </span>
+                </label>
+              ))}
+            </div>
+          </section>
+
+          <section className="settings-section">
+            <div className="settings-section-heading">
+              <h3>Theme</h3>
+              <p>White theme also switches the map to a light map.</p>
+            </div>
+            <div className="theme-choice-grid">
+              {THEME_OPTIONS.map((option) => (
+                <button
+                  className={`theme-choice is-${option.key} ${settings.theme === option.key ? "is-selected" : ""}`}
+                  key={option.key}
+                  onClick={() => setTheme(option.key)}
+                >
+                  <span className="theme-swatch">
+                    <i />
+                    <i />
+                    <i />
+                  </span>
+                  <strong>{option.label}</strong>
+                  <em>{option.description}</em>
+                </button>
+              ))}
+            </div>
+          </section>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function AuthLoadingScreen() {
+  return (
+    <main className="login-screen">
+      <section className="login-panel">
+        <div className="login-brand-mark">
+          <Fuel size={30} />
+        </div>
+        <h1>Emafuel Dispatch</h1>
+        <p>Checking your session...</p>
+      </section>
+    </main>
+  );
+}
+
+function LoginPage({
+  error,
+  onLogin,
+}: {
+  error: string;
+  onLogin: (username: string, password: string) => Promise<void>;
+}) {
+  const [username, setUsername] = useState("David");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      await onLogin(username.trim(), password);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <main className="login-screen">
+      <section className="login-panel">
+        <div className="login-brand-mark">
+          <Fuel size={30} />
+        </div>
+        <div className="login-copy">
+          <span>Secure dashboard</span>
+          <h1>Emafuel Dispatch</h1>
+          <p>Sign in to manage live fuel dispatch, station data, and fleet alerts.</p>
+        </div>
+        <form className="login-form" onSubmit={(event) => void submit(event)}>
+          <label>
+            <span>Username</span>
+            <input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" />
+          </label>
+          <label>
+            <span>Password</span>
+            <input
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              type="password"
+              autoComplete="current-password"
+              autoFocus
+            />
+          </label>
+          {error ? <div className="login-error">{error}</div> : null}
+          <button type="submit" disabled={busy || !username.trim() || !password}>
+            {busy ? "Signing in" : "Login"}
+          </button>
+        </form>
+      </section>
+    </main>
+  );
+}
+
+function UserManagementModal({
+  currentUser,
+  onClose,
+}: {
+  currentUser: User;
+  onClose: () => void;
+}) {
+  const emptyForm: UserCreateInput = {
+    username: "",
+    password: "",
+    display_name: "",
+    email: "",
+    role: "viewer",
+    active: true,
+  };
+  const [users, setUsers] = useState<User[]>([]);
+  const [form, setForm] = useState<UserCreateInput>(emptyForm);
+  const [drafts, setDrafts] = useState<Record<number, UserUpdateInput>>({});
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    fetchUsers()
+      .then(setUsers)
+      .catch((loadError) => setError(loadError instanceof Error ? loadError.message : "Failed to load users"));
+  }, []);
+
+  async function submitCreate(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      const created = await createUser({
+        ...form,
+        username: form.username.trim(),
+        display_name: form.display_name?.trim() || null,
+        email: form.email?.trim() || null,
+      });
+      setUsers((current) => [...current, created].sort((a, b) => a.username.localeCompare(b.username)));
+      setForm(emptyForm);
+    } catch (createError) {
+      setError(createError instanceof Error ? createError.message : "Failed to create user");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveUser(user: User) {
+    const draft = drafts[user.id];
+    if (!draft) return;
+    setBusy(true);
+    setError("");
+    try {
+      const updated = await updateUser(user.id, {
+        ...draft,
+        username: draft.username?.trim(),
+        display_name: draft.display_name === undefined ? undefined : draft.display_name?.trim() || null,
+        email: draft.email === undefined ? undefined : draft.email?.trim() || null,
+        password: draft.password?.trim() || undefined,
+      });
+      setUsers((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+      setDrafts((current) => {
+        const next = { ...current };
+        delete next[user.id];
+        return next;
+      });
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "Failed to update user");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function setDraft(userId: number, patch: UserUpdateInput) {
+    setDrafts((current) => ({ ...current, [userId]: { ...(current[userId] ?? {}), ...patch } }));
+  }
+
+  return (
+    <div className="notification-modal-backdrop" role="presentation" onMouseDown={onClose}>
+      <section className="user-modal" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="notification-modal-header">
+          <div>
+            <h2>User Management</h2>
+            <p>Only creator can edit usernames, passwords, roles, and access.</p>
+          </div>
+          <button className="notification-close-button" onClick={onClose} aria-label="Close user management">
+            ×
+          </button>
+        </div>
+        {error ? <div className="notification-error">{error}</div> : null}
+        <form className="user-create-form" onSubmit={(event) => void submitCreate(event)}>
+          <input value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} placeholder="Username" />
+          <input
+            value={form.display_name ?? ""}
+            onChange={(event) => setForm({ ...form, display_name: event.target.value })}
+            placeholder="Display name"
+          />
+          <input value={form.email ?? ""} onChange={(event) => setForm({ ...form, email: event.target.value })} placeholder="Email" />
+          <input
+            value={form.password}
+            onChange={(event) => setForm({ ...form, password: event.target.value })}
+            placeholder="Password"
+            type="password"
+          />
+          <select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value as UserRole })}>
+            <option value="viewer">Viewer</option>
+            <option value="admin">Admin</option>
+          </select>
+          <button disabled={busy || form.username.trim().length === 0 || form.password.length < 8}>Create User</button>
+        </form>
+        <div className="user-list">
+          {users.map((user) => {
+            const draft = drafts[user.id] ?? {};
+            const isSelf = user.id === currentUser.id;
+            return (
+              <article className="user-row" key={user.id}>
+                <input
+                  value={draft.username ?? user.username}
+                  onChange={(event) => setDraft(user.id, { username: event.target.value })}
+                  aria-label="Username"
+                />
+                <input
+                  value={draft.display_name ?? user.display_name ?? ""}
+                  onChange={(event) => setDraft(user.id, { display_name: event.target.value })}
+                  aria-label="Display name"
+                />
+                <input
+                  value={draft.password ?? ""}
+                  onChange={(event) => setDraft(user.id, { password: event.target.value })}
+                  placeholder="New password"
+                  type="password"
+                  aria-label="New password"
+                />
+                <select
+                  value={draft.role ?? user.role}
+                  onChange={(event) => setDraft(user.id, { role: event.target.value as UserRole })}
+                  disabled={user.role === "creator"}
+                >
+                  <option value="creator">Creator</option>
+                  <option value="admin">Admin</option>
+                  <option value="viewer">Viewer</option>
+                </select>
+                <label className="user-active-toggle">
+                  <input
+                    type="checkbox"
+                    checked={draft.active ?? user.active}
+                    disabled={isSelf}
+                    onChange={(event) => setDraft(user.id, { active: event.target.checked })}
+                  />
+                  <span>{draft.active ?? user.active ? "Active" : "Inactive"}</span>
+                </label>
+                <button disabled={busy || !drafts[user.id]} onClick={() => void saveUser(user)}>
+                  Save
+                </button>
+              </article>
+            );
+          })}
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function TruckCard({
   truck,
   dispatchedStation,
@@ -850,6 +1418,7 @@ function StationResults({
   distanceOrigin,
   canSortNearest,
   searchActive,
+  canDispatch,
   onDispatch,
   onCopy,
   onResetDispatch,
@@ -866,6 +1435,7 @@ function StationResults({
   distanceOrigin: GeoPoint | null;
   canSortNearest: boolean;
   searchActive: boolean;
+  canDispatch: boolean;
   onDispatch: (station: Station) => void;
   onCopy: (station: Station) => void;
   onResetDispatch: () => void;
@@ -898,6 +1468,7 @@ function StationResults({
             <button
               className={selectedTruckActive ? "is-active" : "is-inactive"}
               onClick={onToggleTruckActive}
+              disabled={!canDispatch}
             >
               {selectedTruckActive ? "Deactivate" : "Activate"}
             </button>
@@ -964,7 +1535,7 @@ function StationResults({
                 <div className="station-result-actions">
                   <button
                     className="station-dispatch-button"
-                    disabled={!selectedTruck}
+                    disabled={!selectedTruck || !canDispatch}
                     onClick={() => onDispatch(station)}
                   >
                     {isDispatched ? "Dispatched" : "Dispatch"}
@@ -972,13 +1543,102 @@ function StationResults({
                   <button className="station-copy-button" onClick={() => onCopy(station)}>
                     Copy
                   </button>
-                  {isDispatched ? (
+                  {isDispatched && canDispatch ? (
                     <button className="station-reset-button" onClick={onResetDispatch}>
                       Reset
                     </button>
                   ) : null}
                 </div>
               </div>
+            );
+          })
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CurrentDispatches({
+  dispatches,
+  onSelect,
+}: {
+  dispatches: { truck: Truck; station: Station; origin: DispatchOrigin | null }[];
+  onSelect: (truck: Truck, station: Station) => void;
+}) {
+  const [copiedField, setCopiedField] = useState<string | null>(null);
+
+  function copyDispatchField(key: string, value: string) {
+    void writeClipboardText(value);
+    setCopiedField(key);
+    window.setTimeout(() => {
+      setCopiedField((current) => (current === key ? null : current));
+    }, 1200);
+  }
+
+  return (
+    <div className="current-dispatches">
+      <div className="current-dispatches-summary">
+        <div>
+          <div className="station-results-kicker">Assigned routes</div>
+          <div className="station-results-count">{dispatches.length.toLocaleString()} dispatched</div>
+        </div>
+      </div>
+      <div className="current-dispatches-list">
+        {dispatches.length === 0 ? (
+          <div className="empty-card rounded-lg border border-[#374151] bg-[#1F2937] p-4">
+            <div className="text-sm font-bold">No current dispatches</div>
+            <p className="mt-2 text-sm leading-5 text-[#D1D5DB]">
+              Assigned units will appear here with their destination and miles remaining.
+            </p>
+          </div>
+        ) : (
+          dispatches.map(({ truck, station, origin }) => {
+            const currentLocation = truckLocationLabel(truck) ?? "Current location pending";
+            const originLabel = dispatchOriginLabel(origin);
+            const destinationLabel = `${station.city}, ${station.state}`;
+            return (
+              <article
+                className="current-dispatch-card"
+                key={`${truck.id}-${station.id}`}
+                onClick={() => onSelect(truck, station)}
+              >
+                <div className="current-dispatch-topline">
+                  <strong>Unit {truck.unit_number}</strong>
+                  <span>{truck.fuel_percent == null ? "--" : `${Math.round(truck.fuel_percent)}%`}</span>
+                </div>
+                <button
+                  className="copyable-location current-dispatch-location"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    copyDispatchField(`${truck.id}-current`, currentLocation);
+                  }}
+                >
+                  {copiedField === `${truck.id}-current` ? "Copied" : currentLocation}
+                </button>
+                <div className="current-dispatch-route">
+                  <button
+                    className="copyable-location"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      copyDispatchField(`${truck.id}-origin`, originLabel);
+                    }}
+                  >
+                    {copiedField === `${truck.id}-origin` ? "Copied" : originLabel}
+                  </button>
+                  <em>---</em>
+                  <button
+                    className="copyable-location"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      copyDispatchField(`${truck.id}-destination`, destinationLabel);
+                    }}
+                  >
+                    {copiedField === `${truck.id}-destination` ? "Copied" : destinationLabel}
+                  </button>
+                </div>
+                <div className="current-dispatch-destination">{station.station_name} · Site {station.site_code}</div>
+                <div className="current-dispatch-miles">{stationDistanceLabel(station, pointFromTruckOrNull(truck)) ?? "Miles left unavailable"}</div>
+              </article>
             );
           })
         )}
@@ -1141,6 +1801,24 @@ async function writeClipboardText(text: string) {
   }
 }
 
+function dispatchOriginFromTruck(truck: Truck): DispatchOrigin | null {
+  const point = pointFromTruckOrNull(truck);
+  if (!point) return null;
+  return {
+    ...point,
+    label: truckLocationLabel(truck) ?? point.label,
+    capturedAt: new Date().toISOString(),
+  };
+}
+
+function dispatchOriginLabel(origin: DispatchOrigin | null) {
+  if (!origin) return "Dispatch origin pending";
+  if (/^Unit\s+/i.test(origin.label)) {
+    return `GPS ${formatCoordinate(origin.latitude)}, ${formatCoordinate(origin.longitude)}`;
+  }
+  return origin.label;
+}
+
 function loadDispatchAssignments(): Record<number, number> {
   try {
     const stored = window.localStorage.getItem(DISPATCH_STORAGE_KEY);
@@ -1150,6 +1828,36 @@ function loadDispatchAssignments(): Record<number, number> {
       Object.entries(parsed)
         .map(([truckId, stationId]) => [Number(truckId), Number(stationId)] as const)
         .filter(([truckId, stationId]) => Number.isFinite(truckId) && Number.isFinite(stationId))
+    );
+  } catch {
+    return {};
+  }
+}
+
+function loadDispatchOrigins(): Record<number, DispatchOrigin> {
+  try {
+    const stored = window.localStorage.getItem(DISPATCH_ORIGIN_STORAGE_KEY);
+    if (!stored) return {};
+    const parsed = JSON.parse(stored) as Record<string, Partial<DispatchOrigin>>;
+    return Object.fromEntries(
+      Object.entries(parsed)
+        .map(([truckId, origin]) => [Number(truckId), origin] as const)
+        .filter(
+          ([truckId, origin]) =>
+            Number.isFinite(truckId) &&
+            typeof origin.label === "string" &&
+            Number.isFinite(origin.latitude) &&
+            Number.isFinite(origin.longitude)
+        )
+        .map(([truckId, origin]) => [
+          truckId,
+          {
+            label: origin.label as string,
+            latitude: origin.latitude as number,
+            longitude: origin.longitude as number,
+            capturedAt: typeof origin.capturedAt === "string" ? origin.capturedAt : new Date().toISOString(),
+          },
+        ])
     );
   } catch {
     return {};
@@ -1171,6 +1879,37 @@ function loadTruckActiveOverrides(): Record<number, boolean> {
   }
 }
 
+function loadDashboardSettings(): DashboardSettings {
+  try {
+    const stored = window.localStorage.getItem(DASHBOARD_SETTINGS_STORAGE_KEY);
+    if (!stored) return DEFAULT_DASHBOARD_SETTINGS;
+    const parsed = JSON.parse(stored) as Partial<DashboardSettings>;
+    return {
+      theme: parsed.theme && ["blue", "coffee", "charcoal", "white", "pitch"].includes(parsed.theme)
+        ? parsed.theme
+        : DEFAULT_DASHBOARD_SETTINGS.theme,
+      notifications: {
+        ...DEFAULT_DASHBOARD_SETTINGS.notifications,
+        ...(parsed.notifications ?? {}),
+      },
+    };
+  } catch {
+    return DEFAULT_DASHBOARD_SETTINGS;
+  }
+}
+
+function notificationAllowed(
+  notification: NotificationEvent,
+  preferences: DashboardSettings["notifications"]
+) {
+  const type = notification.event_type.toLowerCase();
+  if (type.includes("fuel_jump") || type.includes("refuel") || type.includes("jump")) return preferences.fuelJump;
+  if (type.includes("fuel")) return preferences.fuel;
+  if (type.includes("dispatch") || type.includes("arrived") || type.includes("missed")) return preferences.dispatch;
+  if (type.includes("samsara")) return preferences.samsara;
+  return preferences.system;
+}
+
 function stationPrice(station: Station) {
   const price = Number(station.latest_price?.your_price);
   return Number.isFinite(price) ? price : Number.POSITIVE_INFINITY;
@@ -1185,6 +1924,27 @@ function pointFromTruck(truck: Truck): GeoPoint {
     latitude: truck.latitude,
     longitude: truck.longitude,
   };
+}
+
+function pointFromTruckOrNull(truck: Truck): GeoPoint | null {
+  if (truck.latitude == null || truck.longitude == null) return null;
+  return {
+    label: truckLocationLabel(truck) ?? `GPS ${formatCoordinate(truck.latitude)}, ${formatCoordinate(truck.longitude)}`,
+    latitude: truck.latitude,
+    longitude: truck.longitude,
+  };
+}
+
+function truckLocationLabel(truck: Truck) {
+  if (truck.current_city && truck.current_state) return `${truck.current_city}, ${truck.current_state}`;
+  if (truck.latitude != null && truck.longitude != null) {
+    return `GPS ${formatCoordinate(truck.latitude)}, ${formatCoordinate(truck.longitude)}`;
+  }
+  return null;
+}
+
+function formatCoordinate(value: number) {
+  return value.toFixed(4);
 }
 
 async function geocodeLocation(value: string): Promise<GeoPoint> {

@@ -22,24 +22,25 @@ type Props = {
   selectedTruck: Truck | null;
   showTrucks: boolean;
   showLocations: boolean;
-  mapStyle: "black" | "terrain";
+  mapStyle: "dark" | "light";
   searchPins: SearchPin[];
   routePath: [number, number][];
   dispatchRoutePath: [number, number][];
   searchRadius: { center: [number, number]; miles: number } | null;
+  canDispatch: boolean;
   onSelect: (station: Station) => void;
   onDispatch: (station: Station) => void;
   onCopy: (station: Station) => void;
 };
 
 const MAP_TILES = {
-  black: {
+  dark: {
     attribution: "&copy; OpenStreetMap contributors &copy; CARTO",
     url: "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
   },
-  terrain: {
-    attribution: "&copy; OpenStreetMap contributors &copy; OpenTopoMap",
-    url: "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",
+  light: {
+    attribution: "&copy; OpenStreetMap contributors &copy; CARTO",
+    url: "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
   },
 };
 
@@ -56,6 +57,7 @@ export function StationMap({
   routePath,
   dispatchRoutePath,
   searchRadius,
+  canDispatch,
   onSelect,
   onDispatch,
   onCopy,
@@ -101,6 +103,7 @@ export function StationMap({
           routePath={routePath}
           dispatchRoutePath={dispatchRoutePath}
           searchRadius={searchRadius}
+          canDispatch={canDispatch}
           onSelect={onSelect}
           onDispatch={onDispatch}
           onCopy={onCopy}
@@ -291,7 +294,7 @@ function TruckLayer({ trucks, selectedTruck }: { trucks: Truck[]; selectedTruck:
   return null;
 }
 
-function ClusteredStationLayer({ stations, selected, selectedTruck, onSelect, onDispatch, onCopy }: Props) {
+function ClusteredStationLayer({ stations, selected, selectedTruck, canDispatch, onSelect, onDispatch, onCopy }: Props) {
   const map = useMap();
   const clusterRef = useRef<L.MarkerClusterGroup | null>(null);
   const markersBySite = useRef<Map<string, L.Marker>>(new Map());
@@ -357,7 +360,7 @@ function ClusteredStationLayer({ stations, selected, selectedTruck, onSelect, on
         icon: stationIcon(station, station.site_code === selected?.site_code, zoom),
         title: `${station.site_code} ${station.station_name}`,
       });
-      marker.bindPopup(popupHtml(station, Boolean(selectedTruck)), {
+      marker.bindPopup(popupHtml(station, Boolean(selectedTruck), canDispatch), {
         className: "dispatch-popup",
         minWidth: 270,
         maxWidth: 320,
@@ -369,7 +372,7 @@ function ClusteredStationLayer({ stations, selected, selectedTruck, onSelect, on
         dispatchButton?.addEventListener(
           "click",
           () => {
-            if (selectedTruck) {
+            if (selectedTruck && canDispatch) {
               onDispatchRef.current(station);
               return;
             }
@@ -385,7 +388,7 @@ function ClusteredStationLayer({ stations, selected, selectedTruck, onSelect, on
       markersBySite.current.set(station.site_code, marker);
       cluster.addLayer(marker);
     });
-  }, [stations, selected, selectedTruck, zoom]);
+  }, [stations, selected, selectedTruck, canDispatch, zoom]);
 
   return null;
 }
@@ -431,8 +434,10 @@ function searchPinIcon(tone: SearchPin["tone"]) {
   });
 }
 
-function popupHtml(station: Station, canDispatch: boolean) {
+function popupHtml(station: Station, hasSelectedTruck: boolean, canDispatch: boolean) {
   const price = station.latest_price?.your_price ? `$${station.latest_price.your_price}` : "No price";
+  const dispatchLabel = canDispatch ? "Dispatch" : hasSelectedTruck ? "View Only" : "Select Unit";
+  const dispatchDisabled = canDispatch ? "" : " disabled";
   return `
     <div class="fuel-popup-card">
       <div class="fuel-popup-kicker">Site ${escapeHtml(station.site_code)}</div>
@@ -445,8 +450,8 @@ function popupHtml(station: Station, canDispatch: boolean) {
         <div><span>Parking</span><strong>${station.parking_spaces_count ?? "--"}</strong></div>
       </div>
       <div class="fuel-popup-actions">
-        <button class="fuel-popup-button" data-dispatch-site="${escapeHtml(station.site_code)}">
-          ${canDispatch ? "Dispatch" : "Select Unit"}
+        <button class="fuel-popup-button" data-dispatch-site="${escapeHtml(station.site_code)}"${dispatchDisabled}>
+          ${dispatchLabel}
         </button>
         <button class="fuel-popup-button fuel-popup-copy-button" data-copy-site="${escapeHtml(station.site_code)}">Copy</button>
       </div>

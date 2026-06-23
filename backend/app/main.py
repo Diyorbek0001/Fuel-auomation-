@@ -5,11 +5,15 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import api_router
 from app.core.config import get_settings
+from app.db.session import async_session_maker
+from app.services.auth_service import ensure_creator_user
 from app.services.samsara_background_worker import samsara_background_worker
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    async with async_session_maker() as session:
+        await ensure_creator_user(session)
     samsara_background_worker.start()
     try:
         yield

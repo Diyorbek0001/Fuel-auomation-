@@ -66,7 +66,7 @@ async def _process_fuel_events(session: AsyncSession, truck: Truck) -> None:
         notification = await create_notification_event(
             session,
             truck=truck,
-            event_type="FUEL_INCREASED_10_PERCENT",
+            event_type="FUEL_JUMP_20_PERCENT",
             title="Refuel detected",
             message=message,
             dedupe_key=f"fuel_jump:{truck.id}:{previous_bucket}:{current_bucket}:{today}",

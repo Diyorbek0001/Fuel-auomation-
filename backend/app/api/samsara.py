@@ -6,13 +6,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.db.session import get_session
 from app.integrations.samsara import SamsaraClient
+from app.services.auth_service import require_admin_user, require_current_user
 from app.services.samsara_sync_service import sync_all_samsara_accounts
 
 router = APIRouter()
 
 
 @router.get("/test")
-async def api_samsara_test() -> dict:
+async def api_samsara_test(_=Depends(require_current_user)) -> dict:
     settings = get_settings()
     accounts = settings.samsara_accounts
     if not accounts:
@@ -57,7 +58,10 @@ async def api_samsara_test() -> dict:
 
 
 @router.post("/sync")
-async def api_samsara_sync(session: AsyncSession = Depends(get_session)) -> dict:
+async def api_samsara_sync(
+    _=Depends(require_admin_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
     logs = await sync_all_samsara_accounts(session)
     return {
         "synced_accounts": len(logs),

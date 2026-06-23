@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     station_seed_csv: Path = Path("final_fuel_stations.csv")
     low_fuel_threshold_percent: int = 50
     fuel_default_threshold_percent: int = 50
-    fuel_refuel_jump_percent: int = 10
+    fuel_refuel_jump_percent: int = 20
     missed_station_threshold_miles: float = 10.0
     dispatch_pre_alert_miles: float = 60.0
     dispatch_final_alert_miles: float = 50.0
@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     samsara_sync_interval_seconds: int = 180
     telegram_bot_token: str = ""
     telegram_dispatch_chat_id: str = ""
+    creator_username: str = "David"
+    creator_password: str = "change-this-password"
+    auth_session_hours: int = 24
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

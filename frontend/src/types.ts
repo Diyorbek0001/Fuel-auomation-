@@ -109,3 +109,34 @@ export type TruckStreamEvent = {
   type: "truck_update";
   truck: Truck;
 };
+
+export type UserRole = "creator" | "admin" | "dispatcher" | "viewer";
+
+export type User = {
+  id: number;
+  username: string;
+  email: string | null;
+  display_name: string | null;
+  role: UserRole;
+  active: boolean;
+  last_login_at: string | null;
+  created_at: string;
+};
+
+export type UserCreateInput = {
+  username: string;
+  password: string;
+  email?: string | null;
+  display_name?: string | null;
+  role: UserRole;
+  active: boolean;
+};
+
+export type UserUpdateInput = Partial<{
+  username: string;
+  password: string;
+  email: string | null;
+  display_name: string | null;
+  role: UserRole;
+  active: boolean;
+}>;

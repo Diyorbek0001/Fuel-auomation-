@@ -8,12 +8,17 @@ from app.db.session import get_session
 from app.models import FuelDispatch, FuelDispatchStatus, StationMaster, Truck
 from app.models.common import utcnow
 from app.schemas.dispatch import DispatchAssignIn, DispatchCancelIn, DispatchOut
+from app.services.auth_service import require_admin_user
 
 router = APIRouter()
 
 
 @router.post("/assign", response_model=DispatchOut)
-async def api_assign_dispatch(payload: DispatchAssignIn, session: AsyncSession = Depends(get_session)) -> FuelDispatch:
+async def api_assign_dispatch(
+    payload: DispatchAssignIn,
+    _=Depends(require_admin_user),
+    session: AsyncSession = Depends(get_session),
+) -> FuelDispatch:
     truck = await session.get(Truck, payload.truck_id)
     if truck is None:
         raise HTTPException(status_code=404, detail="Truck not found")
@@ -41,7 +46,11 @@ async def api_assign_dispatch(payload: DispatchAssignIn, session: AsyncSession =
 
 
 @router.post("/cancel")
-async def api_cancel_dispatch(payload: DispatchCancelIn, session: AsyncSession = Depends(get_session)) -> dict[str, int]:
+async def api_cancel_dispatch(
+    payload: DispatchCancelIn,
+    _=Depends(require_admin_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, int]:
     dispatches = await session.scalars(
         select(FuelDispatch).where(
             FuelDispatch.truck_id == payload.truck_id,

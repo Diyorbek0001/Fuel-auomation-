@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_session
 from app.schemas.station import StationListOut, StationOut, StationPriceOut
+from app.services.auth_service import require_current_user
 from app.services.station_service import get_station_by_site, latest_price, list_stations
 
 router = APIRouter()
@@ -18,6 +19,7 @@ async def api_list_stations(
     search: Optional[str] = None,
     limit: int = Query(1000, ge=1, le=5000),
     offset: int = Query(0, ge=0),
+    _=Depends(require_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> StationListOut:
     total, stations = await list_stations(session, state=state, search=search, limit=limit, offset=offset)
@@ -25,7 +27,11 @@ async def api_list_stations(
 
 
 @router.get("/{site_code}", response_model=StationOut)
-async def api_get_station(site_code: str, session: AsyncSession = Depends(get_session)) -> StationOut:
+async def api_get_station(
+    site_code: str,
+    _=Depends(require_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> StationOut:
     station = await get_station_by_site(session, site_code)
     if station is None:
         raise HTTPException(status_code=404, detail="Station not found")

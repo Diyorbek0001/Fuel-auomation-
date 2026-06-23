@@ -10,6 +10,7 @@ from app.models.station import StationMaster
 from app.models.truck import Truck
 from app.models.truck_state_history import TruckStateHistory
 from app.models.user import User, UserRole
+from app.models.user_session import UserSession
 
 __all__ = [
     "AuditLog",
@@ -30,4 +31,5 @@ __all__ = [
     "TruckStateHistory",
     "User",
     "UserRole",
+    "UserSession",
 ]
